@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+
+# Runtime data files
+portfolio.json
+watchlist.json
+alert_config.json
+alert_history.json
+ibkr_config.json
+screener_output.csv
+scan.log
+
+# IDE
+.vscode/
+.idea/
