@@ -2,8 +2,10 @@ name: Daily Stock Scan
 
 on:
   schedule:
-    # 14:00 UTC Mon-Fri = 7:30 PM IST = 10:00 AM EST (US market open)
+    # Scan 1: 14:00 UTC Mon-Fri = 7:30 PM IST = 10:00 AM EST (market open)
     - cron: '0 14 * * 1-5'
+    # Scan 2: 19:30 UTC Mon-Fri = 1:00 AM IST = 3:30 PM EST (before close)
+    - cron: '30 19 * * 1-5'
   workflow_dispatch: # manual trigger from GitHub UI
 
 jobs:
