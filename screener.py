@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import SCREENER_FILTERS, TOP_N_RESULTS
 from sp500 import get_sp500_tickers
 from indicators import compute_rsi, compute_sma, compute_macd, compute_volume_spike
+from signals import get_enhanced_signals
 
 
 def _fetch_stock_data(ticker: str) -> dict | None:
@@ -142,7 +143,7 @@ def _passes_basic_filters(data: dict) -> bool:
     return True
 
 
-def run_screener(tickers: list[str] | None = None, max_workers: int = 10) -> pd.DataFrame:
+def run_screener(tickers: list[str] | None = None, max_workers: int = 10, enhanced: bool = False) -> pd.DataFrame:
     if tickers is None:
         print("Fetching S&P 500 ticker list...")
         tickers = get_sp500_tickers()
@@ -161,6 +162,24 @@ def run_screener(tickers: list[str] | None = None, max_workers: int = 10) -> pd.
             if data and _passes_basic_filters(data):
                 data["score"] = _score_stock(data)
                 results.append(data)
+
+    if enhanced and results:
+        print("Fetching advanced signals (news, insider, earnings) for top candidates...")
+        top_tickers = sorted(results, key=lambda d: d["score"], reverse=True)[:30]
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            sig_futures = {executor.submit(get_enhanced_signals, d["ticker"]): d["ticker"] for d in top_tickers}
+            sig_map = {}
+            for future in as_completed(sig_futures):
+                t = sig_futures[future]
+                sig_map[t] = future.result()
+
+        for data in results:
+            sig = sig_map.get(data["ticker"])
+            if sig:
+                data["score"] += sig["bonus_score"]
+                data["news_sentiment"] = sig["news"]["sentiment"] if sig["news"] else None
+                data["insider_signal"] = sig["insider"]["signal"] if sig["insider"] else None
+                data["earnings_beats"] = f"{sig['earnings']['beats']}/{sig['earnings']['total_quarters']}" if sig["earnings"] else None
 
     df = pd.DataFrame(results)
     if df.empty:

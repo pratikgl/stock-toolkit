@@ -44,6 +44,19 @@ This toolkit gives you an **information edge** — instead of guessing, you scre
 - Signal-to-order pipeline: scanner signals → IBKR orders automatically
 - Setup guide for Indian residents
 
+### Phase 6: Advanced Signals (News, Insider, Earnings)
+- **News sentiment** — keyword-scored analysis of Yahoo Finance headlines per stock
+- **Insider trading** — tracks insider buy/sell ratio (insider buys are one of the strongest bullish signals)
+- **Earnings momentum** — tracks earnings beats/misses (PEAD — stocks that beat estimates tend to keep outperforming)
+- All three signals are combined into a bonus score that augments the screener
+- Use `--enhanced` flag on screener to include these signals, or `signals NVDA` for standalone view
+
+### Phase 7: GitHub Actions (Cloud Automation)
+- Daily scan runs on GitHub Actions at 7:30 PM IST (Mon-Fri) — works even when your laptop is off
+- Scans ALL S&P 500 stocks with ALL strategies
+- Sends Telegram alerts ranked by conviction (how many strategies agree)
+- Scan results saved as GitHub artifacts for 30 days
+
 ### India Tax Calculator
 - Capital gains tax: LTCG (>24 months, 12.5%) vs STCG (slab rate)
 - TCS on LRS remittance (20% above Rs.7 lakh/FY)
@@ -71,12 +84,23 @@ python3 -m venv venv
 ./venv/bin/python3 main.py alerts setup YOUR_BOT_TOKEN YOUR_CHAT_ID
 ```
 
-### Automated Daily Alerts (Optional)
+### Automated Daily Alerts — GitHub Actions (Recommended)
+No laptop needed. Runs in the cloud automatically.
+
+1. Go to your repo → Settings → Secrets and variables → Actions
+2. Add two secrets:
+   - `TELEGRAM_BOT_TOKEN` — your bot token from @BotFather
+   - `TELEGRAM_CHAT_ID` — your chat ID (number)
+3. That's it. The scan runs daily at 7:30 PM IST (Mon-Fri).
+4. You can also trigger manually: Actions tab → "Daily Stock Scan" → "Run workflow"
+
+### Automated Daily Alerts — Local Cron (Alternative)
 ```bash
 crontab -e
 # Add: runs 7:30 PM IST Mon-Fri (10:00 AM EST market open)
 30 19 * * 1-5 /path/to/stock-toolkit/run_scan.sh
 ```
+Note: Only works when your laptop is on and awake.
 
 ### IBKR Integration (Optional)
 ```bash
@@ -91,10 +115,12 @@ PY=./venv/bin/python3
 # ── Screening ──
 $PY main.py quick                          # Scan 30 popular stocks (~30s)
 $PY main.py screen -o results.csv          # Full S&P 500 scan (~10-15 min)
+$PY main.py screen --enhanced -o results.csv  # With news/insider/earnings signals
 $PY main.py screen --tickers AAPL,MSFT,NVDA
 
 # ── Deep Analysis ──
 $PY main.py analyze NVDA META ORCL
+$PY main.py signals NVDA META              # News sentiment, insider trades, earnings
 
 # ── Backtesting ──
 $PY main.py strategies                     # List available strategies
@@ -110,6 +136,7 @@ $PY main.py alerts list                    # View watchlist
 $PY main.py alerts scan                    # Run scan + send Telegram alerts
 $PY main.py alerts scan --no-notify        # Dry run (terminal only)
 $PY main.py alerts scan --force            # Ignore 24h cooldown
+$PY main.py alerts scan-full               # Scan ALL S&P 500 (used by GitHub Actions)
 
 # ── Portfolio ──
 $PY main.py portfolio buy NVDA 18 194.83 --date 2026-07-04
@@ -173,23 +200,25 @@ $PY main.py ibkr auto-trade --execute --capital 500     # Live, $500 per trade
 
 ```
 stock-toolkit/
-├── main.py            # CLI entry point (9 commands)
+├── main.py            # CLI entry point (10 commands)
 ├── config.py          # Screener thresholds and constants
 ├── screener.py        # S&P 500 stock screener
 ├── analyzer.py        # Deep-dive stock analyzer
 ├── indicators.py      # Technical indicators (RSI, SMA, MACD, Bollinger)
+├── signals.py         # Advanced signals (news sentiment, insider, earnings)
 ├── sp500.py           # S&P 500 ticker list fetcher
 ├── strategies.py      # 8 preset trading strategies
 ├── backtester.py      # Backtesting engine
 ├── watchlist.py       # Watchlist manager (JSON)
-├── scanner.py         # Alert scanner with cooldown
-├── notifier.py        # Telegram notification sender
+├── scanner.py         # Alert scanner (watchlist + full S&P 500 mode)
+├── notifier.py        # Telegram notification sender (supports env vars for CI)
 ├── portfolio.py       # Portfolio tracker with INR conversion
 ├── tax.py             # India tax calculator (LTCG/STCG/TCS/DTAA)
 ├── ibkr.py            # Interactive Brokers API integration
 ├── run_scan.sh        # Cron-ready daily scan script
 ├── requirements.txt   # Python dependencies
-└── venv/              # Python virtual environment
+├── .github/workflows/ # GitHub Actions for automated daily scans
+└── venv/              # Python virtual environment (local only)
 ```
 
 ## What's Done
@@ -205,6 +234,13 @@ stock-toolkit/
 - [x] India tax calculator (LTCG, STCG, TCS, dividends, DTAA)
 - [x] IBKR API integration with dry-run safety
 - [x] Signal-to-order pipeline (scanner → IBKR orders)
+- [x] News sentiment analysis (Yahoo Finance headlines)
+- [x] Insider trading signal (buy/sell ratio tracking)
+- [x] Earnings momentum signal (beat/miss tracking, PEAD)
+- [x] Enhanced screener mode (`--enhanced`) combining all signals
+- [x] Full S&P 500 scan mode (`scan-full`) for GitHub Actions
+- [x] GitHub Actions workflow for daily cloud-based automated scans
+- [x] Conviction ranking (alerts ranked by # of strategies agreeing)
 
 ## Future Improvements
 

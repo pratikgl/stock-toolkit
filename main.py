@@ -9,19 +9,20 @@ from analyzer import analyze_stock, display_analysis
 from backtester import Backtester, display_backtest, compare_strategies
 from strategies import STRATEGIES
 from watchlist import add_stock, remove_stock, display_watchlist, add_preset_watchlist
-from scanner import run_scan
+from scanner import run_scan, run_full_scan
 from notifier import configure_telegram
 from portfolio import buy as portfolio_buy, sell as portfolio_sell, show_portfolio, show_transactions
 from tax import display_tax_summary, display_tcs_estimate, display_full_tax_guide
 import ibkr
+from signals import display_enhanced_signals
 
 
 def cmd_screen(args):
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",")]
-        df = run_screener(tickers=tickers, max_workers=args.workers)
+        df = run_screener(tickers=tickers, max_workers=args.workers, enhanced=args.enhanced)
     else:
-        df = run_screener(max_workers=args.workers)
+        df = run_screener(max_workers=args.workers, enhanced=args.enhanced)
     display_results(df, top_n=args.top)
     if args.output:
         df.to_csv(args.output, index=False)
@@ -105,6 +106,15 @@ def cmd_alert_scan(args):
     run_scan(notify=not args.no_notify, force=args.force)
 
 
+def cmd_alert_scan_full(args):
+    run_full_scan(notify=not args.no_notify)
+
+
+def cmd_signals(args):
+    for ticker in args.tickers:
+        display_enhanced_signals(ticker.upper())
+
+
 # --- Portfolio commands ---
 def cmd_portfolio_show(args):
     show_portfolio()
@@ -178,6 +188,8 @@ def main():
     p_screen.add_argument("--top", type=int, default=15, help="Show top N results")
     p_screen.add_argument("--workers", type=int, default=10, help="Parallel workers")
     p_screen.add_argument("--output", "-o", help="Save full results to CSV")
+    p_screen.add_argument("--enhanced", "-e", action="store_true",
+                          help="Add news/insider/earnings signals to scoring (slower but smarter)")
     p_screen.set_defaults(func=cmd_screen)
 
     p_analyze = sub.add_parser("analyze", help="Deep-analyze specific stocks")
@@ -202,6 +214,10 @@ def main():
 
     p_strats = sub.add_parser("strategies", help="List available strategies")
     p_strats.set_defaults(func=cmd_strategies)
+
+    p_signals = sub.add_parser("signals", help="Advanced signals: news sentiment, insider trading, earnings")
+    p_signals.add_argument("tickers", nargs="+", help="Ticker symbols")
+    p_signals.set_defaults(func=cmd_signals)
 
     # --- Alert commands ---
     p_alerts = sub.add_parser("alerts", help="Manage alerts and watchlist")
@@ -228,10 +244,14 @@ def main():
     p_preset.add_argument("name", choices=["top30", "tech", "dividend"])
     p_preset.set_defaults(func=cmd_alert_preset)
 
-    p_scan = alert_sub.add_parser("scan", help="Run alert scan now")
+    p_scan = alert_sub.add_parser("scan", help="Run alert scan now (watchlist only)")
     p_scan.add_argument("--no-notify", action="store_true", help="Don't send Telegram messages")
     p_scan.add_argument("--force", action="store_true", help="Ignore cooldown, send all signals")
     p_scan.set_defaults(func=cmd_alert_scan)
+
+    p_scan_full = alert_sub.add_parser("scan-full", help="Scan ALL S&P 500 stocks with all strategies")
+    p_scan_full.add_argument("--no-notify", action="store_true", help="Don't send Telegram messages")
+    p_scan_full.set_defaults(func=cmd_alert_scan_full)
 
     # --- Portfolio commands ---
     p_portfolio = sub.add_parser("portfolio", help="Track your holdings and P&L")

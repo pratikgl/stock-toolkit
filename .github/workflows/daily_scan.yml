@@ -1,0 +1,37 @@
+name: Daily Stock Scan
+
+on:
+  schedule:
+    # 14:00 UTC Mon-Fri = 7:30 PM IST = 10:00 AM EST (US market open)
+    - cron: '0 14 * * 1-5'
+  workflow_dispatch: # manual trigger from GitHub UI
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full S&P 500 scan
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py alerts scan-full
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results-${{ github.run_number }}
+          path: screener_output.csv
+          retention-days: 30

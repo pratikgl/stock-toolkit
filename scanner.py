@@ -11,6 +11,7 @@ import pandas as pd
 
 from strategies import STRATEGIES
 from watchlist import get_watchlist
+from sp500 import get_sp500_tickers
 from notifier import send_telegram, format_alert, format_scan_summary
 from indicators import compute_rsi, compute_sma
 
@@ -183,6 +184,99 @@ def run_scan(notify: bool = True, force: bool = False, max_workers: int = 5) -> 
             msg = format_alert(alert)
             send_telegram(msg)
         print(f"Sent {len(all_alerts) + 1} Telegram messages.")
+
+    return all_alerts
+
+
+def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
+    """Scan ALL S&P 500 stocks with all strategies. Designed for GitHub Actions."""
+    tickers = get_sp500_tickers()
+    all_strategies = list(STRATEGIES.keys())
+
+    history = _load_history()
+    all_alerts = []
+    scanned = 0
+
+    print(f"Full scan: {len(tickers)} stocks x {len(all_strategies)} strategies...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_scan_ticker, t, all_strategies): t for t in tickers}
+        for future in as_completed(futures):
+            scanned += 1
+            if scanned % 50 == 0:
+                print(f"  Progress: {scanned}/{len(tickers)}")
+            alerts = future.result()
+            for alert in alerts:
+                if not _is_duplicate(alert["ticker"], alert["strategy"], alert["signal"], history):
+                    all_alerts.append(alert)
+                    _record_alert(alert["ticker"], alert["strategy"], alert["signal"], history)
+
+    _save_history(history)
+
+    # Only keep buy signals for Telegram (sell signals are noisy across 500 stocks)
+    buy_alerts = [a for a in all_alerts if a["signal"] == "buy"]
+
+    # Rank by number of strategies agreeing (multi-strategy confirmation)
+    ticker_signals = {}
+    for a in buy_alerts:
+        t = a["ticker"]
+        if t not in ticker_signals:
+            ticker_signals[t] = {"alerts": [], "strategies": set()}
+        ticker_signals[t]["alerts"].append(a)
+        ticker_signals[t]["strategies"].add(a["strategy"])
+
+    # Sort by conviction (more strategies agreeing = stronger signal)
+    ranked = sorted(ticker_signals.items(), key=lambda x: len(x[1]["strategies"]), reverse=True)
+
+    print(f"\nScanned {scanned} stocks. {len(buy_alerts)} buy signals found.")
+    if ranked:
+        print(f"\nTop signals by conviction:\n")
+        for ticker, info in ranked[:15]:
+            strats = ", ".join(sorted(info["strategies"]))
+            price = info["alerts"][0]["price"]
+            rsi = info["alerts"][0].get("rsi")
+            rsi_str = f"RSI {rsi:.0f}" if rsi else ""
+            print(f"  {len(info['strategies'])} strategies  {ticker:6s}  ${price:.2f}  {rsi_str:8s}  [{strats}]")
+        print()
+
+    if notify and ranked:
+        # Send summary
+        msg_lines = [
+            f"📊 <b>Daily S&P 500 Scan</b>",
+            f"Scanned {scanned} stocks",
+            f"",
+            f"<b>Top Buy Signals (by conviction):</b>",
+            f"",
+        ]
+        for ticker, info in ranked[:10]:
+            strats = ", ".join(sorted(info["strategies"]))
+            price = info["alerts"][0]["price"]
+            rsi = info["alerts"][0].get("rsi")
+            count = len(info["strategies"])
+            rsi_str = f" | RSI {rsi:.0f}" if rsi else ""
+            msg_lines.append(f"{'🔥' if count >= 3 else '🟢'} <b>{ticker}</b> ${price:.2f}{rsi_str}")
+            msg_lines.append(f"   {count} strategies: {strats}")
+            msg_lines.append("")
+
+        send_telegram("\n".join(msg_lines))
+
+        # Send individual alerts only for high-conviction (3+ strategies agree)
+        for ticker, info in ranked:
+            if len(info["strategies"]) >= 3:
+                best_alert = info["alerts"][0]
+                best_alert["strategy"] = f"{len(info['strategies'])} strategies: {', '.join(sorted(info['strategies']))}"
+                send_telegram(format_alert(best_alert))
+
+        print(f"Telegram alerts sent.")
+
+    # Save full results to CSV for artifact upload
+    if buy_alerts:
+        import csv
+        with open("screener_output.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["ticker", "signal", "strategy", "price", "rsi", "change_1d", "off_high"])
+            writer.writeheader()
+            for a in buy_alerts:
+                writer.writerow({k: a.get(k) for k in writer.fieldnames})
 
     return all_alerts
 

@@ -1,6 +1,7 @@
 """Telegram notification sender."""
 
 import json
+import os
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -9,6 +10,12 @@ CONFIG_PATH = Path(__file__).parent / "alert_config.json"
 
 
 def _load_config() -> dict:
+    # Environment variables take priority (for GitHub Actions)
+    env_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    env_chat = os.environ.get("TELEGRAM_CHAT_ID")
+    if env_token and env_chat:
+        return {"telegram": {"bot_token": env_token, "chat_id": env_chat}}
+
     if not CONFIG_PATH.exists():
         return {}
     with open(CONFIG_PATH) as f:
