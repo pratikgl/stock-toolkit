@@ -14,6 +14,7 @@ from watchlist import get_watchlist
 from sp500 import get_sp500_tickers
 from notifier import send_telegram, format_alert, format_scan_summary
 from indicators import compute_rsi, compute_sma
+from backtester import Backtester
 
 ALERT_HISTORY_PATH = Path(__file__).parent / "alert_history.json"
 COOLDOWN_HOURS = 24
@@ -217,8 +218,29 @@ def run_scan(notify: bool = True, force: bool = False, max_workers: int = 5) -> 
     return all_alerts
 
 
+def _backtest_validate(ticker: str, strategy_name: str) -> dict | None:
+    """Run a quick 3-year backtest to validate a strategy works on this stock."""
+    if strategy_name not in STRATEGIES:
+        return None
+    try:
+        fn, desc = STRATEGIES[strategy_name]
+        bt = Backtester(ticker, period="3y")
+        result = bt.run(fn, strategy_name=strategy_name)
+        return {
+            "return_pct": result.total_return_pct,
+            "benchmark_pct": result.benchmark_return or 0,
+            "win_rate": result.win_rate,
+            "num_trades": result.num_trades,
+            "sharpe": result.sharpe_ratio,
+            "max_drawdown": result.max_drawdown,
+            "passed": result.win_rate >= 40 and result.num_trades >= 2,
+        }
+    except Exception:
+        return None
+
+
 def _compute_signal_score(info: dict) -> float:
-    """Combined score: strategy conviction + quality + volume confirmation."""
+    """Combined score: strategy conviction + quality + volume + backtest validation."""
     strat_count = len(info["strategies"])
     quality = info["alerts"][0].get("quality_score", 0)
     vol_ratio = info["alerts"][0].get("vol_ratio", 1.0)
@@ -230,13 +252,23 @@ def _compute_signal_score(info: dict) -> float:
     elif vol_ratio > 1.2:
         score += 5
 
+    # Backtest bonus/penalty
+    bt = info.get("backtest")
+    if bt:
+        if bt["passed"]:
+            score += 20        # strategy historically works on this stock
+            if bt["win_rate"] >= 60:
+                score += 10    # high win rate bonus
+        else:
+            score -= 15        # strategy hasn't worked here
+
     # Penalty: death cross (downtrend) reduces score
     for alert in info["alerts"]:
         for r in alert.get("reasons", []):
             if "Death cross" in r:
                 score -= 20
                 break
-        break  # only check first alert
+        break
 
     return score
 
@@ -277,9 +309,29 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
         ticker_signals[t]["alerts"].append(a)
         ticker_signals[t]["strategies"].add(a["strategy"])
 
-    # Score and rank
+    # Pre-score to find top candidates for backtesting
     for ticker, info in ticker_signals.items():
         info["score"] = _compute_signal_score(info)
+
+    # Backtest top 15 candidates — validate strategy historically works on this stock
+    pre_ranked = sorted(ticker_signals.items(), key=lambda x: x[1]["score"], reverse=True)
+    if pre_ranked:
+        print(f"\nBacktest-validating top {min(15, len(pre_ranked))} candidates...")
+        for ticker, info in pre_ranked[:15]:
+            # Pick the strategy with strongest signal to backtest
+            best_strat = sorted(info["strategies"])[0]
+            bt_result = _backtest_validate(ticker, best_strat)
+            if bt_result:
+                info["backtest"] = bt_result
+                status = "PASS" if bt_result["passed"] else "FAIL"
+                print(f"  {ticker:6s} [{best_strat}] {status} — "
+                      f"{bt_result['return_pct']:+.0f}% return, "
+                      f"{bt_result['win_rate']:.0f}% win rate, "
+                      f"{bt_result['num_trades']} trades")
+
+        # Re-score with backtest data
+        for ticker, info in ticker_signals.items():
+            info["score"] = _compute_signal_score(info)
 
     ranked = sorted(ticker_signals.items(), key=lambda x: x[1]["score"], reverse=True)
 
@@ -338,6 +390,11 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
                     msg_lines.append(f"🔥 <b>{ticker}</b> ({name}) ${a['price']:.2f}")
                     msg_lines.append(f"   Score: {info['score']:.0f}{rsi_str}{vol_str}")
                     msg_lines.append(f"   {len(info['strategies'])} strategies: {strats}")
+                    bt = info.get("backtest")
+                    if bt and bt["passed"]:
+                        msg_lines.append(f"   ✅ Backtest: {bt['return_pct']:+.0f}% over 3y, {bt['win_rate']:.0f}% win rate")
+                    elif bt:
+                        msg_lines.append(f"   ⚠️ Backtest: {bt['return_pct']:+.0f}% over 3y (weak)")
                     if a.get("reasons"):
                         msg_lines.append(f"   {a['reasons'][0]}")
                     msg_lines.append("")
