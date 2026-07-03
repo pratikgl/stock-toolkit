@@ -15,6 +15,7 @@ from sp500 import get_sp500_tickers
 from notifier import send_telegram, format_alert, format_scan_summary
 from indicators import compute_rsi, compute_sma
 from backtester import Backtester
+from ai_analyzer import analyze_signal
 
 ALERT_HISTORY_PATH = Path(__file__).parent / "alert_history.json"
 COOLDOWN_HOURS = 24
@@ -47,6 +48,55 @@ def _is_duplicate(ticker: str, strategy: str, signal: str, history: dict) -> boo
 def _record_alert(ticker: str, strategy: str, signal: str, history: dict):
     key = _alert_key(ticker, strategy, signal)
     history[key] = datetime.now().isoformat()
+
+
+def _compute_timing(df: pd.DataFrame, signal: str) -> dict:
+    """Determine if now is the right time to act or if waiting is better."""
+    if signal != "buy" or len(df) < 5:
+        return {"action": "ACT NOW", "reason": "Signal active"}
+
+    rsi_now = df["rsi"].iloc[-1] if "rsi" in df else None
+    rsi_prev = df["rsi"].iloc[-2] if "rsi" in df and len(df) > 1 else None
+    close = df["Close"]
+    price = close.iloc[-1]
+    price_3d_ago = close.iloc[-4] if len(close) > 3 else price
+
+    # Is RSI still falling or starting to turn up?
+    rsi_turning_up = rsi_now and rsi_prev and rsi_now > rsi_prev
+    still_falling = price < price_3d_ago and not rsi_turning_up
+
+    # Is price at/near support (lower Bollinger band)?
+    bb_lower = df["bb_lower"].iloc[-1] if "bb_lower" in df else None
+    at_support = bb_lower and price <= bb_lower * 1.02
+
+    # 3-day price trend
+    three_day_change = (price / price_3d_ago - 1) * 100 if price_3d_ago else 0
+
+    if rsi_now and rsi_now < 25 and still_falling:
+        return {
+            "action": "WAIT 1-2 DAYS",
+            "reason": f"RSI {rsi_now:.0f} still falling ({three_day_change:+.1f}% in 3d). Let it bottom out.",
+        }
+
+    if rsi_turning_up and at_support:
+        return {
+            "action": "BUY TODAY",
+            "reason": f"RSI turning up from {rsi_prev:.0f}→{rsi_now:.0f} at support. Reversal starting.",
+        }
+
+    if rsi_turning_up:
+        return {
+            "action": "BUY TODAY",
+            "reason": f"RSI turning up ({rsi_prev:.0f}→{rsi_now:.0f}). Momentum shifting bullish.",
+        }
+
+    if still_falling and three_day_change < -3:
+        return {
+            "action": "WAIT",
+            "reason": f"Still dropping ({three_day_change:+.1f}% in 3 days). Wait for RSI to turn up.",
+        }
+
+    return {"action": "BUY TODAY", "reason": "Signal active, no reason to delay."}
 
 
 def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
@@ -138,6 +188,9 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
                 if vol_ratio > 1.5:
                     reasons.append(f"Volume {vol_ratio:.1f}x average")
 
+                # Timing analysis
+                timing = _compute_timing(df, signal)
+
                 alerts.append({
                     "ticker": ticker,
                     "signal": signal,
@@ -147,6 +200,7 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
                     "change_1d": (price / prev_close - 1) * 100 if prev_close else None,
                     "off_high": (high_52w - price) / high_52w * 100 if high_52w else None,
                     "reasons": reasons,
+                    "timing": timing,
                     "sector": info.get("sector", "Unknown"),
                     "quality_score": quality_score,
                     "vol_ratio": round(vol_ratio, 2),
@@ -376,8 +430,8 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
                 f"",
             ]
 
-            # High conviction (3+ strategies or score >= 75)
-            top_tier = [(t, i) for t, i in strong if len(i["strategies"]) >= 3 or i["score"] >= 75]
+            # High conviction = 3+ strategies agree (hard rule, no score shortcut)
+            top_tier = [(t, i) for t, i in strong if len(i["strategies"]) >= 3]
             if top_tier:
                 msg_lines.append(f"🔥 <b>HIGH CONVICTION:</b>")
                 msg_lines.append("")
@@ -423,7 +477,12 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
             for ticker, info in top_tier[:3]:
                 a = info["alerts"][0]
                 a["strategy"] = f"{len(info['strategies'])} strategies: {', '.join(sorted(info['strategies']))}"
-                send_telegram(format_alert(a))
+                # AI analysis for high-conviction signals
+                bt = info.get("backtest")
+                ai = analyze_signal(a, bt)
+                if ai:
+                    a["ai_analysis"] = ai
+                send_telegram(format_alert(a, tier="high"))
 
         print(f"Telegram alerts sent.")
 

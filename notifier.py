@@ -62,9 +62,9 @@ def send_telegram(message: str, parse_mode: str = "HTML") -> bool:
         return False
 
 
-def format_alert(alert: dict) -> str:
+def format_alert(alert: dict, tier: str = "watch") -> str:
     signal = alert["signal"].upper()
-    emoji = "🟢" if signal == "BUY" else "🔴"
+    emoji = "🔥" if tier == "high" else "🟢" if signal == "BUY" else "🔴"
 
     name = alert.get("name", alert["ticker"])
     lines = [
@@ -94,7 +94,20 @@ def format_alert(alert: dict) -> str:
     if alert.get("off_high") is not None:
         lines.append(f"<b>Off 52W High:</b> {alert['off_high']:.1f}%")
 
-    # Action hint based on $300 trade size
+    # Timing advice
+    timing = alert.get("timing")
+    if timing:
+        lines.append(f"")
+        lines.append(f"⏱ <b>{timing['action']}</b>")
+        lines.append(f"   {timing['reason']}")
+
+    # AI analysis
+    ai = alert.get("ai_analysis")
+    if ai:
+        lines.append(f"")
+        lines.append(f"🤖 <b>AI Take:</b> {ai}")
+
+    # Action hint
     price = alert.get("price", 0)
     if price > 0 and signal == "BUY":
         shares = 300 / price
