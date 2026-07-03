@@ -66,16 +66,23 @@ def format_alert(alert: dict) -> str:
     signal = alert["signal"].upper()
     emoji = "🟢" if signal == "BUY" else "🔴"
 
+    name = alert.get("name", alert["ticker"])
     lines = [
-        f"{emoji} <b>{signal} SIGNAL — {alert['ticker']}</b>",
+        f"{emoji} <b>{signal} — {alert['ticker']}</b> ({name})",
         f"",
         f"<b>Price:</b> ${alert['price']:.2f}",
     ]
 
     if alert.get("rsi") is not None:
         lines.append(f"<b>RSI:</b> {alert['rsi']:.1f}")
+    if alert.get("sector"):
+        lines.append(f"<b>Sector:</b> {alert['sector']}")
     if alert.get("strategy"):
         lines.append(f"<b>Strategy:</b> {alert['strategy']}")
+
+    if alert.get("vol_ratio") and alert["vol_ratio"] > 1.3:
+        lines.append(f"<b>Volume:</b> {alert['vol_ratio']:.1f}x average ✓")
+
     if alert.get("reasons"):
         lines.append(f"")
         for r in alert["reasons"]:
@@ -83,9 +90,16 @@ def format_alert(alert: dict) -> str:
 
     if alert.get("change_1d") is not None:
         lines.append(f"")
-        lines.append(f"<b>1D Change:</b> {alert['change_1d']:+.2f}%")
+        lines.append(f"<b>1D:</b> {alert['change_1d']:+.2f}%")
     if alert.get("off_high") is not None:
         lines.append(f"<b>Off 52W High:</b> {alert['off_high']:.1f}%")
+
+    # Action hint based on $300 trade size
+    price = alert.get("price", 0)
+    if price > 0 and signal == "BUY":
+        shares = 300 / price
+        lines.append(f"")
+        lines.append(f"💰 $300 = {shares:.2f} shares")
 
     return "\n".join(lines)
 

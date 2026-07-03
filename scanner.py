@@ -60,7 +60,6 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
         volume = hist["Volume"]
         price = close.iloc[-1]
 
-        # Precompute indicators (same as backtester)
         from ta.momentum import RSIIndicator
         from ta.trend import MACD
         from ta.volatility import BollingerBands
@@ -81,6 +80,28 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
 
         row = df.iloc[-1]
         lookback = df
+
+        # Volume confirmation
+        vol_today = volume.iloc[-1] if not volume.empty else 0
+        vol_avg = volume.iloc[-21:-1].mean() if len(volume) > 21 else vol_today
+        vol_ratio = vol_today / vol_avg if vol_avg > 0 else 1.0
+
+        # Quality score — fundamentals-based
+        quality_score = 0
+        pe = info.get("trailingPE")
+        if pe and 5 < pe < 30:
+            quality_score += 10
+        growth = info.get("revenueGrowth")
+        if growth and growth > 0.10:
+            quality_score += 15
+        elif growth and growth > 0.05:
+            quality_score += 5
+        margin = info.get("profitMargins")
+        if margin and margin > 0.15:
+            quality_score += 10
+        cap = info.get("marketCap", 0)
+        if cap and cap > 50_000_000_000:
+            quality_score += 5  # large cap bonus
 
         alerts = []
         for strat_name in strategy_names:
@@ -104,14 +125,17 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
                 sma_200 = row.get("sma_200")
                 if sma_50 and sma_200:
                     if sma_50 > sma_200:
-                        reasons.append("Golden cross active (SMA50 > SMA200)")
+                        reasons.append("Golden cross (SMA50 > SMA200)")
                     else:
-                        reasons.append("Death cross active (SMA50 < SMA200)")
+                        reasons.append("Death cross (SMA50 < SMA200)")
 
                 if high_52w and price:
                     off_pct = (high_52w - price) / high_52w * 100
                     if off_pct > 15:
-                        reasons.append(f"{off_pct:.0f}% below 52-week high")
+                        reasons.append(f"{off_pct:.0f}% below 52W high")
+
+                if vol_ratio > 1.5:
+                    reasons.append(f"Volume {vol_ratio:.1f}x average")
 
                 alerts.append({
                     "ticker": ticker,
@@ -122,6 +146,11 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
                     "change_1d": (price / prev_close - 1) * 100 if prev_close else None,
                     "off_high": (high_52w - price) / high_52w * 100 if high_52w else None,
                     "reasons": reasons,
+                    "sector": info.get("sector", "Unknown"),
+                    "quality_score": quality_score,
+                    "vol_ratio": round(vol_ratio, 2),
+                    "market_cap": cap,
+                    "name": info.get("shortName", ticker),
                 })
 
         return alerts
@@ -188,6 +217,30 @@ def run_scan(notify: bool = True, force: bool = False, max_workers: int = 5) -> 
     return all_alerts
 
 
+def _compute_signal_score(info: dict) -> float:
+    """Combined score: strategy conviction + quality + volume confirmation."""
+    strat_count = len(info["strategies"])
+    quality = info["alerts"][0].get("quality_score", 0)
+    vol_ratio = info["alerts"][0].get("vol_ratio", 1.0)
+
+    score = strat_count * 25  # 25 pts per agreeing strategy
+    score += quality           # up to 40 pts for fundamentals
+    if vol_ratio > 1.5:
+        score += 15            # volume confirmation bonus
+    elif vol_ratio > 1.2:
+        score += 5
+
+    # Penalty: death cross (downtrend) reduces score
+    for alert in info["alerts"]:
+        for r in alert.get("reasons", []):
+            if "Death cross" in r:
+                score -= 20
+                break
+        break  # only check first alert
+
+    return score
+
+
 def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
     """Scan ALL S&P 500 stocks with all strategies. Designed for GitHub Actions."""
     tickers = get_sp500_tickers()
@@ -213,10 +266,9 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
 
     _save_history(history)
 
-    # Only keep buy signals for Telegram (sell signals are noisy across 500 stocks)
     buy_alerts = [a for a in all_alerts if a["signal"] == "buy"]
 
-    # Rank by number of strategies agreeing (multi-strategy confirmation)
+    # Group by ticker
     ticker_signals = {}
     for a in buy_alerts:
         t = a["ticker"]
@@ -225,58 +277,109 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
         ticker_signals[t]["alerts"].append(a)
         ticker_signals[t]["strategies"].add(a["strategy"])
 
-    # Sort by conviction (more strategies agreeing = stronger signal)
-    ranked = sorted(ticker_signals.items(), key=lambda x: len(x[1]["strategies"]), reverse=True)
+    # Score and rank
+    for ticker, info in ticker_signals.items():
+        info["score"] = _compute_signal_score(info)
+
+    ranked = sorted(ticker_signals.items(), key=lambda x: x[1]["score"], reverse=True)
+
+    # Sector context — count how many stocks per sector have buy signals
+    sector_counts = {}
+    for ticker, info in ranked:
+        sector = info["alerts"][0].get("sector", "Unknown")
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
 
     print(f"\nScanned {scanned} stocks. {len(buy_alerts)} buy signals found.")
     if ranked:
-        print(f"\nTop signals by conviction:\n")
+        print(f"\nTop signals (score = strategies + quality + volume):\n")
         for ticker, info in ranked[:15]:
             strats = ", ".join(sorted(info["strategies"]))
-            price = info["alerts"][0]["price"]
-            rsi = info["alerts"][0].get("rsi")
-            rsi_str = f"RSI {rsi:.0f}" if rsi else ""
-            print(f"  {len(info['strategies'])} strategies  {ticker:6s}  ${price:.2f}  {rsi_str:8s}  [{strats}]")
+            a = info["alerts"][0]
+            rsi_str = f"RSI {a['rsi']:.0f}" if a.get("rsi") else ""
+            vol_str = f"Vol {a['vol_ratio']:.1f}x" if a.get("vol_ratio", 1) > 1.2 else ""
+            sector = a.get("sector", "?")
+            print(f"  Score {info['score']:3.0f}  {ticker:6s}  ${a['price']:.2f}  {rsi_str:8s}  "
+                  f"{vol_str:10s}  {sector:20s}  [{strats}]")
         print()
 
+        if sector_counts:
+            print("Sector breakdown of buy signals:")
+            for sector, count in sorted(sector_counts.items(), key=lambda x: -x[1])[:5]:
+                print(f"  {sector:25s}  {count} stocks")
+            print()
+
     if notify and ranked:
-        # Send summary
-        msg_lines = [
-            f"📊 <b>Daily S&P 500 Scan</b>",
-            f"Scanned {scanned} stocks",
-            f"",
-            f"<b>Top Buy Signals (by conviction):</b>",
-            f"",
-        ]
-        for ticker, info in ranked[:10]:
-            strats = ", ".join(sorted(info["strategies"]))
-            price = info["alerts"][0]["price"]
-            rsi = info["alerts"][0].get("rsi")
-            count = len(info["strategies"])
-            rsi_str = f" | RSI {rsi:.0f}" if rsi else ""
-            msg_lines.append(f"{'🔥' if count >= 3 else '🟢'} <b>{ticker}</b> ${price:.2f}{rsi_str}")
-            msg_lines.append(f"   {count} strategies: {strats}")
-            msg_lines.append("")
+        # Only include stocks with score >= 50 (minimum 2 strategies + decent quality)
+        strong = [(t, i) for t, i in ranked if i["score"] >= 50]
 
-        send_telegram("\n".join(msg_lines))
+        if not strong:
+            send_telegram(f"📊 <b>Daily S&P 500 Scan</b>\n"
+                         f"Scanned {scanned} stocks\n\n"
+                         f"No high-conviction signals today. Market is quiet.")
+        else:
+            # Summary message with top 10
+            msg_lines = [
+                f"📊 <b>Daily S&P 500 Scan</b>",
+                f"Scanned {scanned} stocks | {len(strong)} quality signals",
+                f"",
+            ]
 
-        # Send individual alerts only for high-conviction (3+ strategies agree)
-        for ticker, info in ranked:
-            if len(info["strategies"]) >= 3:
-                best_alert = info["alerts"][0]
-                best_alert["strategy"] = f"{len(info['strategies'])} strategies: {', '.join(sorted(info['strategies']))}"
-                send_telegram(format_alert(best_alert))
+            # High conviction (3+ strategies or score >= 75)
+            top_tier = [(t, i) for t, i in strong if len(i["strategies"]) >= 3 or i["score"] >= 75]
+            if top_tier:
+                msg_lines.append(f"🔥 <b>HIGH CONVICTION:</b>")
+                msg_lines.append("")
+                for ticker, info in top_tier[:5]:
+                    a = info["alerts"][0]
+                    strats = ", ".join(sorted(info["strategies"]))
+                    rsi_str = f" | RSI {a['rsi']:.0f}" if a.get("rsi") else ""
+                    vol_str = f" | Vol {a['vol_ratio']:.1f}x" if a.get("vol_ratio", 1) > 1.5 else ""
+                    name = a.get("name", ticker)
+                    msg_lines.append(f"🔥 <b>{ticker}</b> ({name}) ${a['price']:.2f}")
+                    msg_lines.append(f"   Score: {info['score']:.0f}{rsi_str}{vol_str}")
+                    msg_lines.append(f"   {len(info['strategies'])} strategies: {strats}")
+                    if a.get("reasons"):
+                        msg_lines.append(f"   {a['reasons'][0]}")
+                    msg_lines.append("")
+
+            # Watchlist-worthy (2 strategies, decent score)
+            watch_tier = [(t, i) for t, i in strong if (t, i) not in top_tier]
+            if watch_tier:
+                msg_lines.append(f"🟢 <b>WATCHLIST:</b>")
+                msg_lines.append("")
+                for ticker, info in watch_tier[:5]:
+                    a = info["alerts"][0]
+                    strats = ", ".join(sorted(info["strategies"]))
+                    rsi_str = f" | RSI {a['rsi']:.0f}" if a.get("rsi") else ""
+                    msg_lines.append(f"🟢 <b>{ticker}</b> ${a['price']:.2f}{rsi_str}")
+                    msg_lines.append(f"   {len(info['strategies'])} strats: {strats}")
+                    msg_lines.append("")
+
+            # Sector context
+            top_sectors = sorted(sector_counts.items(), key=lambda x: -x[1])[:3]
+            if top_sectors:
+                msg_lines.append(f"📈 <b>Hot sectors:</b> {', '.join(f'{s} ({c})' for s, c in top_sectors)}")
+
+            send_telegram("\n".join(msg_lines))
+
+            # Individual detailed alerts ONLY for high conviction
+            for ticker, info in top_tier[:3]:
+                a = info["alerts"][0]
+                a["strategy"] = f"{len(info['strategies'])} strategies: {', '.join(sorted(info['strategies']))}"
+                send_telegram(format_alert(a))
 
         print(f"Telegram alerts sent.")
 
-    # Save full results to CSV for artifact upload
+    # Save full results to CSV
     if buy_alerts:
         import csv
+        fields = ["ticker", "signal", "strategy", "price", "rsi", "change_1d",
+                  "off_high", "sector", "quality_score", "vol_ratio"]
         with open("screener_output.csv", "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["ticker", "signal", "strategy", "price", "rsi", "change_1d", "off_high"])
+            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
             for a in buy_alerts:
-                writer.writerow({k: a.get(k) for k in writer.fieldnames})
+                writer.writerow(a)
 
     return all_alerts
 
