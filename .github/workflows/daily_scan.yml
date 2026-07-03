@@ -26,10 +26,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py alerts scan-full
+        run: |
+          set -e
+          python main.py alerts scan-full
 
       - name: Upload scan results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: scan-results-${{ github.run_number }}
