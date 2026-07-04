@@ -15,6 +15,8 @@ from portfolio import buy as portfolio_buy, sell as portfolio_sell, show_portfol
 from tax import display_tax_summary, display_tcs_estimate, display_full_tax_guide
 import ibkr
 from signals import display_enhanced_signals
+from sell_monitor import check_sell_signals
+from trade_tracker import check_telegram_trades
 
 
 def cmd_screen(args):
@@ -122,6 +124,10 @@ def cmd_portfolio_show(args):
 
 def cmd_portfolio_buy(args):
     portfolio_buy(args.ticker, args.shares, args.price, args.date)
+
+
+def cmd_portfolio_sell_check(args):
+    check_sell_signals(notify=not args.no_notify)
 
 
 def cmd_portfolio_sell(args):
@@ -277,6 +283,10 @@ def main():
     p_port_hist = port_sub.add_parser("history", help="Show transaction history")
     p_port_hist.add_argument("--last", "-n", type=int, default=20, help="Show last N transactions")
     p_port_hist.set_defaults(func=cmd_portfolio_history)
+
+    p_port_sellcheck = port_sub.add_parser("sell-check", help="Check holdings for sell signals")
+    p_port_sellcheck.add_argument("--no-notify", action="store_true", help="Don't send Telegram")
+    p_port_sellcheck.set_defaults(func=cmd_portfolio_sell_check)
 
     # --- Tax commands ---
     p_tax = sub.add_parser("tax", help="India tax calculator for US investments")
