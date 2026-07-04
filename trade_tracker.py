@@ -150,7 +150,8 @@ def check_telegram_trades():
 
 
 def _process_command(text: str) -> str | None:
-    text = text.strip().upper()
+    original = text.strip()
+    text = original.upper()
     parts = text.split()
 
     if not parts:
@@ -158,37 +159,121 @@ def _process_command(text: str) -> str | None:
 
     cmd = parts[0]
 
-    if cmd in ("BUY", "BOUGHT") and len(parts) >= 4:
-        try:
-            ticker = parts[1]
-            shares = float(parts[2])
-            price = float(parts[3])
-            return record_buy(ticker, shares, price)
-        except (ValueError, IndexError):
-            return "Format: BUY TICKER SHARES PRICE\nExample: BUY NVDA 10 194.83"
+    if cmd in ("BUY", "BOUGHT"):
+        return _handle_buy(parts)
 
-    elif cmd in ("SELL", "SOLD") and len(parts) >= 4:
-        try:
-            ticker = parts[1]
-            shares = float(parts[2])
-            price = float(parts[3])
-            return record_sell(ticker, shares, price)
-        except (ValueError, IndexError):
-            return "Format: SELL TICKER SHARES PRICE\nExample: SELL NVDA 5 250.00"
+    elif cmd in ("SELL", "SOLD"):
+        return _handle_sell(parts)
 
     elif cmd in ("HOLDINGS", "PORTFOLIO", "STATUS"):
         return _format_holdings()
 
-    elif cmd == "HELP":
-        return (
-            "Commands:\n"
-            "BUY NVDA 10 194.83\n"
-            "SELL NVDA 5 250.00\n"
-            "HOLDINGS — show portfolio\n"
-            "HELP — this message"
-        )
+    elif cmd in ("HELP", "HI", "HELLO", "START", "/START", "/HELP"):
+        return _help_message()
 
-    return None
+    # Unknown command — show help
+    return (
+        f"❓ Didn't understand: \"{original}\"\n\n"
+        + _help_message()
+    )
+
+
+def _handle_buy(parts: list[str]) -> str:
+    if len(parts) < 2:
+        return "❌ Missing ticker.\n\nFormat: BUY TICKER SHARES PRICE\nExample: BUY NVDA 10 194.83"
+
+    if len(parts) < 3:
+        return f"❌ Missing number of shares.\n\nFormat: BUY {parts[1]} SHARES PRICE\nExample: BUY {parts[1]} 10 194.83"
+
+    if len(parts) < 4:
+        return f"❌ Missing price.\n\nFormat: BUY {parts[1]} {parts[2]} PRICE\nExample: BUY {parts[1]} {parts[2]} 194.83"
+
+    ticker = parts[1]
+
+    # Validate ticker (basic: 1-5 uppercase letters)
+    if not ticker.isalpha() or len(ticker) > 5:
+        return f"❌ Invalid ticker \"{ticker}\". Should be 1-5 letters.\nExample: BUY NVDA 10 194.83"
+
+    # Validate shares
+    try:
+        shares = float(parts[2])
+    except ValueError:
+        return f"❌ \"{parts[2]}\" is not a valid number for shares.\nExample: BUY {ticker} 10 194.83"
+    if shares <= 0:
+        return f"❌ Shares must be greater than 0. You entered: {shares}"
+
+    # Validate price
+    price_str = parts[3].replace("$", "")
+    try:
+        price = float(price_str)
+    except ValueError:
+        return f"❌ \"{parts[3]}\" is not a valid price.\nExample: BUY {ticker} {shares} 194.83"
+    if price <= 0:
+        return f"❌ Price must be greater than 0. You entered: {price}"
+
+    result = record_buy(ticker, shares, price)
+    total = shares * price
+    return (
+        f"✅ {result}\n"
+        f"Total invested: ${total:,.2f}\n\n"
+        f"I'll monitor {ticker} and alert you when to sell.\n"
+        f"Type HOLDINGS to see your portfolio."
+    )
+
+
+def _handle_sell(parts: list[str]) -> str:
+    if len(parts) < 2:
+        return "❌ Missing ticker.\n\nFormat: SELL TICKER SHARES PRICE\nExample: SELL NVDA 5 250.00"
+
+    if len(parts) < 3:
+        return f"❌ Missing number of shares.\n\nFormat: SELL {parts[1]} SHARES PRICE\nExample: SELL {parts[1]} 5 250.00"
+
+    if len(parts) < 4:
+        return f"❌ Missing price.\n\nFormat: SELL {parts[1]} {parts[2]} PRICE\nExample: SELL {parts[1]} {parts[2]} 250.00"
+
+    ticker = parts[1]
+
+    if not ticker.isalpha() or len(ticker) > 5:
+        return f"❌ Invalid ticker \"{ticker}\". Should be 1-5 letters."
+
+    try:
+        shares = float(parts[2])
+    except ValueError:
+        return f"❌ \"{parts[2]}\" is not a valid number for shares."
+    if shares <= 0:
+        return f"❌ Shares must be greater than 0."
+
+    price_str = parts[3].replace("$", "")
+    try:
+        price = float(price_str)
+    except ValueError:
+        return f"❌ \"{parts[3]}\" is not a valid price."
+    if price <= 0:
+        return f"❌ Price must be greater than 0."
+
+    result = record_sell(ticker, shares, price)
+    return f"✅ {result}\n\nType HOLDINGS to see updated portfolio."
+
+
+def _help_message() -> str:
+    return (
+        "📈 Stock Toolkit Bot\n\n"
+        "Record your trades and I'll monitor them for sell signals.\n\n"
+        "Commands:\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "BUY NVDA 10 194.83\n"
+        "  → Records buying 10 shares of NVDA at $194.83\n\n"
+        "SELL NVDA 5 250.00\n"
+        "  → Records selling 5 shares at $250\n\n"
+        "HOLDINGS\n"
+        "  → Shows your current portfolio\n\n"
+        "HELP\n"
+        "  → Shows this message\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "After recording, I'll automatically check your stocks\n"
+        "twice daily and alert you when to SELL HALF, SELL ALL,\n"
+        "or HOLD (for tax reasons)."
+    )
 
 
 def _format_holdings() -> str:
