@@ -338,29 +338,50 @@ def _backtest_validate(ticker: str, strategy_name: str) -> dict | None:
 
 
 def _compute_signal_score(info: dict) -> float:
-    """Combined score: strategy conviction + quality + volume + backtest validation."""
+    """Combined score across 5 dimensions. Max ~180, typical strong signal 80-120."""
+    a = info["alerts"][0]
     strat_count = len(info["strategies"])
-    quality = info["alerts"][0].get("quality_score", 0)
-    vol_ratio = info["alerts"][0].get("vol_ratio", 1.0)
+    quality = a.get("quality_score", 0)
+    vol_ratio = a.get("vol_ratio", 1.0)
+    rsi = a.get("rsi")
 
-    score = strat_count * 25  # 25 pts per agreeing strategy
-    score += quality           # up to 40 pts for fundamentals
-    if vol_ratio > 1.5:
-        score += 15            # volume confirmation bonus
+    # --- 1. Strategy agreement (0-75 pts) ---
+    score = strat_count * 20
+    # Bonus for diverse strategy types (not just RSI variants agreeing)
+    strat_names = info["strategies"]
+    has_trend = bool(strat_names & {"golden-cross", "sma-trend", "multi-tf"})
+    has_mean_rev = bool(strat_names & {"rsi", "rsi-conservative", "bollinger"})
+    has_momentum = bool(strat_names & {"macd", "momentum", "rel-strength"})
+    has_dip = bool(strat_names & {"dip-buyer", "earnings-dip"})
+    diversity = sum([has_trend, has_mean_rev, has_momentum, has_dip])
+    if diversity >= 3:
+        score += 15  # strategies from 3+ different categories = strong confirmation
+    elif diversity >= 2:
+        score += 5
+
+    # --- 2. Fundamentals (0-40 pts) ---
+    score += quality
+
+    # --- 3. Volume confirmation (0-15 pts) ---
+    if vol_ratio > 2.0:
+        score += 15
+    elif vol_ratio > 1.5:
+        score += 10
     elif vol_ratio > 1.2:
         score += 5
 
-    # Backtest bonus/penalty
+    # --- 4. Backtest validation (-15 to +30 pts) ---
     bt = info.get("backtest")
     if bt:
         if bt["passed"]:
-            score += 20        # strategy historically works on this stock
+            score += 20
             if bt["win_rate"] >= 60:
-                score += 10    # high win rate bonus
+                score += 10
         else:
-            score -= 15        # strategy hasn't worked here
+            score -= 15
 
-    # Penalty: death cross (downtrend)
+    # --- 5. Penalties ---
+    # Death cross
     for alert in info["alerts"]:
         for r in alert.get("reasons", []):
             if "Death cross" in r:
@@ -368,14 +389,66 @@ def _compute_signal_score(info: dict) -> float:
                 break
         break
 
-    # Penalty: earnings imminent (risky to buy)
-    earnings_days = info["alerts"][0].get("earnings_days")
+    # Earnings imminent
+    earnings_days = a.get("earnings_days")
     if earnings_days is not None and 0 <= earnings_days <= 3:
-        score -= 30  # strong penalty — don't buy right before earnings
+        score -= 30
     elif earnings_days is not None and 4 <= earnings_days <= 7:
-        score -= 10  # mild caution
+        score -= 10
+
+    # Timing penalty: WAIT signals reduce score
+    timing = a.get("timing", {})
+    if "WAIT" in timing.get("action", ""):
+        score -= 10
 
     return score
+
+
+def _classify_tier(info: dict) -> str:
+    """Determine signal tier based on multiple quality gates, not just strategy count.
+
+    🔥 BUY requires ALL of:
+      - 3+ strategies agree, OR 2 strategies from different categories + score >= 80
+      - No death cross
+      - No earnings within 3 days
+      - Timing is not WAIT
+      - Score >= 70
+
+    ⚡ WATCH: everything else with 2+ strategies and score >= 50
+    """
+    a = info["alerts"][0]
+    strat_count = len(info["strategies"])
+    score = info["score"]
+    timing = a.get("timing", {}).get("action", "")
+    earnings_days = a.get("earnings_days")
+
+    has_death_cross = any("Death cross" in r for r in a.get("reasons", []))
+    earnings_imminent = earnings_days is not None and 0 <= earnings_days <= 3
+    is_waiting = "WAIT" in timing
+
+    # Hard disqualifiers for BUY tier
+    if has_death_cross or earnings_imminent or is_waiting:
+        return "watch" if strat_count >= 2 and score >= 50 else "none"
+
+    # Strategy diversity check
+    strat_names = info["strategies"]
+    has_trend = bool(strat_names & {"golden-cross", "sma-trend", "multi-tf"})
+    has_mean_rev = bool(strat_names & {"rsi", "rsi-conservative", "bollinger"})
+    has_momentum = bool(strat_names & {"macd", "momentum", "rel-strength"})
+    has_dip = bool(strat_names & {"dip-buyer", "earnings-dip"})
+    diversity = sum([has_trend, has_mean_rev, has_momentum, has_dip])
+
+    # BUY tier: high conviction
+    if strat_count >= 3 and score >= 70:
+        return "buy"
+    if strat_count >= 2 and diversity >= 2 and score >= 80:
+        return "buy"  # 2 strategies but from different categories + strong score
+
+    # WATCH tier
+    if strat_count >= 2 and score >= 50:
+        return "watch"
+
+    return "none"
 
 
 def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
@@ -466,16 +539,12 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
             print()
 
     if notify and ranked:
-        # Filter: minimum 2 strategies required
-        qualified = [(t, i) for t, i in ranked if len(i["strategies"]) >= 2]
+        # Classify each signal into tiers using quality gates
+        for ticker, info in ranked:
+            info["tier"] = _classify_tier(info)
 
-        # Two tiers:
-        #   🔥 BUY: 3+ strategies agree — you act on these
-        #   ⚡ WATCH: 2 strategies + score >= 70 — just awareness
-        buy_tier = [(t, i) for t, i in qualified if len(i["strategies"]) >= 3]
-        watch_tier = [(t, i) for t, i in qualified
-                      if len(i["strategies"]) == 2 and i["score"] >= 70
-                      and (t, i) not in buy_tier]
+        buy_tier = [(t, i) for t, i in ranked if i["tier"] == "buy"]
+        watch_tier = [(t, i) for t, i in ranked if i["tier"] == "watch"]
 
         if not buy_tier and not watch_tier:
             send_telegram(f"📊 <b>Daily S&P 500 Scan</b>\n"

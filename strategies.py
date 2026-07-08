@@ -147,6 +147,106 @@ def dip_buyer(row: pd.Series, lookback: pd.DataFrame) -> str | None:
     return None
 
 
+def earnings_dip(row: pd.Series, lookback: pd.DataFrame) -> str | None:
+    """Buy stocks that dropped 10%+ in a short window (earnings overreaction).
+    These tend to recover within 2-4 weeks as the market digests the news."""
+    if len(lookback) < 10:
+        return None
+
+    price = row["Close"]
+    rsi = row.get("rsi")
+    sma_200 = row.get("sma_200")
+
+    # Check for a sharp drop in the last 5 days
+    price_5d_ago = lookback["Close"].iloc[-6] if len(lookback) > 5 else price
+    drop_5d = (price / price_5d_ago - 1) * 100
+
+    # Buy if: dropped 10%+ in 5 days, RSI oversold, and was above SMA200 before the drop
+    if drop_5d < -10 and rsi and rsi < 35:
+        if sma_200 and price_5d_ago > sma_200:
+            return "buy"
+
+    # Sell after bounce or if it keeps falling
+    if rsi and rsi > 60:
+        return "sell"
+    price_10d_ago = lookback["Close"].iloc[-11] if len(lookback) > 10 else price
+    if (price / price_10d_ago - 1) * 100 < -20:
+        return "sell"
+    return None
+
+
+def relative_strength(row: pd.Series, lookback: pd.DataFrame) -> str | None:
+    """Buy stocks outperforming their recent trend with improving momentum.
+    Filters out stocks that are cheap for a reason (declining fundamentals)."""
+    if len(lookback) < 60:
+        return None
+
+    price = row["Close"]
+    sma_50 = row.get("sma_50")
+    sma_200 = row.get("sma_200")
+    rsi = row.get("rsi")
+    macd_hist = row.get("macd_hist")
+
+    if sma_50 is None or sma_200 is None or rsi is None:
+        return None
+
+    # 1-month and 3-month performance
+    price_1m = lookback["Close"].iloc[-22] if len(lookback) > 22 else price
+    price_3m = lookback["Close"].iloc[-63] if len(lookback) > 63 else price
+    ret_1m = (price / price_1m - 1) * 100
+    ret_3m = (price / price_3m - 1) * 100
+
+    # Buy: stock is in uptrend AND outperforming (positive 1m + 3m returns)
+    # AND has a mild pullback (RSI 35-50 = not oversold, just a dip)
+    if (sma_50 > sma_200 and ret_1m > 0 and ret_3m > 5
+            and 30 < rsi < 50 and macd_hist and macd_hist > 0):
+        return "buy"
+
+    # Sell: momentum gone
+    if ret_1m < -10 or (sma_50 < sma_200 and rsi > 50):
+        return "sell"
+    return None
+
+
+def multi_timeframe(row: pd.Series, lookback: pd.DataFrame) -> str | None:
+    """Buy only when BOTH weekly and daily timeframes agree.
+    Daily: RSI < 40 (short-term dip). Weekly: price above 10-week SMA (long-term uptrend).
+    This filters out short-term noise and only buys when the big picture supports it."""
+    if len(lookback) < 50:
+        return None
+
+    price = row["Close"]
+    rsi = row.get("rsi")
+    sma_50 = row.get("sma_50")  # ~10 weeks
+    sma_200 = row.get("sma_200")
+    macd_hist = row.get("macd_hist")
+
+    if rsi is None or sma_50 is None or sma_200 is None:
+        return None
+
+    # Weekly view: SMA50 > SMA200 (uptrend) AND price above SMA50
+    weekly_bullish = sma_50 > sma_200
+
+    # Daily view: RSI dip (oversold) + MACD turning positive
+    daily_dip = rsi < 40
+    macd_positive = macd_hist and macd_hist > 0
+
+    # Weekly uptrend confirmation using slope (SMA50 rising over last 10 days)
+    sma50_series = lookback["sma_50"].dropna()
+    if len(sma50_series) >= 10:
+        sma50_slope = sma50_series.iloc[-1] - sma50_series.iloc[-10]
+        weekly_rising = sma50_slope > 0
+    else:
+        weekly_rising = False
+
+    if weekly_bullish and weekly_rising and daily_dip and macd_positive:
+        return "buy"
+
+    if rsi > 70 or (not weekly_bullish and rsi > 55):
+        return "sell"
+    return None
+
+
 # Registry for CLI access
 STRATEGIES = {
     "rsi": (rsi_mean_reversion, "RSI Mean Reversion (buy <30, sell >70)"),
@@ -157,4 +257,7 @@ STRATEGIES = {
     "bollinger": (bollinger_bounce, "Bollinger Band Bounce"),
     "momentum": (combined_momentum, "Combined Momentum (RSI + MACD + SMA200)"),
     "dip-buyer": (dip_buyer, "Dip Buyer (5% dips in uptrends)"),
+    "earnings-dip": (earnings_dip, "Earnings Dip (10%+ drop overreaction)"),
+    "rel-strength": (relative_strength, "Relative Strength (outperformers pulling back)"),
+    "multi-tf": (multi_timeframe, "Multi-Timeframe (weekly uptrend + daily dip)"),
 }
