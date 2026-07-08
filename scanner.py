@@ -132,6 +132,34 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
         row = df.iloc[-1]
         lookback = df
 
+        # Earnings calendar
+        earnings_warning = None
+        earnings_days = None
+        try:
+            cal = stock.calendar
+            if cal is not None:
+                earn_date = None
+                if isinstance(cal, dict):
+                    dates = cal.get("Earnings Date", [])
+                    earn_date = dates[0] if dates else None
+                elif isinstance(cal, pd.DataFrame) and "Earnings Date" in cal.columns:
+                    earn_date = cal["Earnings Date"].iloc[0]
+
+                if earn_date is not None:
+                    if hasattr(earn_date, 'date'):
+                        earn_date = earn_date.date()
+                    from datetime import date
+                    today = date.today()
+                    if isinstance(earn_date, date):
+                        delta = (earn_date - today).days
+                        earnings_days = delta
+                        if 0 <= delta <= 7:
+                            earnings_warning = f"⚠️ Earnings in {delta} days ({earn_date})"
+                        elif -3 <= delta < 0:
+                            earnings_warning = f"📊 Reported earnings {abs(delta)} days ago"
+        except Exception:
+            pass
+
         # Volume confirmation
         vol_today = volume.iloc[-1] if not volume.empty else 0
         vol_avg = volume.iloc[-21:-1].mean() if len(volume) > 21 else vol_today
@@ -188,8 +216,23 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
                 if vol_ratio > 1.5:
                     reasons.append(f"Volume {vol_ratio:.1f}x average")
 
+                if earnings_warning:
+                    reasons.append(earnings_warning)
+
                 # Timing analysis
                 timing = _compute_timing(df, signal)
+
+                # Override timing if earnings are imminent
+                if earnings_days is not None and 0 <= earnings_days <= 3 and signal == "buy":
+                    timing = {
+                        "action": "WAIT — EARNINGS",
+                        "reason": f"Earnings in {earnings_days} days. Stock can swing 10-20%. Wait until after.",
+                    }
+                elif earnings_days is not None and 4 <= earnings_days <= 7 and signal == "buy":
+                    timing = {
+                        "action": "CAUTION — EARNINGS SOON",
+                        "reason": f"Earnings in {earnings_days} days. Buy half now, half after earnings.",
+                    }
 
                 alerts.append({
                     "ticker": ticker,
@@ -206,6 +249,7 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
                     "vol_ratio": round(vol_ratio, 2),
                     "market_cap": cap,
                     "name": info.get("shortName", ticker),
+                    "earnings_days": earnings_days,
                 })
 
         return alerts
@@ -316,13 +360,20 @@ def _compute_signal_score(info: dict) -> float:
         else:
             score -= 15        # strategy hasn't worked here
 
-    # Penalty: death cross (downtrend) reduces score
+    # Penalty: death cross (downtrend)
     for alert in info["alerts"]:
         for r in alert.get("reasons", []):
             if "Death cross" in r:
                 score -= 20
                 break
         break
+
+    # Penalty: earnings imminent (risky to buy)
+    earnings_days = info["alerts"][0].get("earnings_days")
+    if earnings_days is not None and 0 <= earnings_days <= 3:
+        score -= 30  # strong penalty — don't buy right before earnings
+    elif earnings_days is not None and 4 <= earnings_days <= 7:
+        score -= 10  # mild caution
 
     return score
 
