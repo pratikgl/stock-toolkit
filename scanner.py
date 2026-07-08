@@ -418,20 +418,15 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
         # Filter: minimum 2 strategies required
         qualified = [(t, i) for t, i in ranked if len(i["strategies"]) >= 2]
 
-        # Three tiers:
-        #   🔥 HIGH CONVICTION: 3+ strategies agree
-        #   ⚡ STRONG: 2 strategies + score >= 70 (good fundamentals + volume)
-        #   🟢 WATCH: 2 strategies + score < 70
-        top_tier = [(t, i) for t, i in qualified if len(i["strategies"]) >= 3]
-        strong_tier = [(t, i) for t, i in qualified
-                       if len(i["strategies"]) == 2 and i["score"] >= 70
-                       and (t, i) not in top_tier]
+        # Two tiers:
+        #   🔥 BUY: 3+ strategies agree — you act on these
+        #   ⚡ WATCH: 2 strategies + score >= 70 — just awareness
+        buy_tier = [(t, i) for t, i in qualified if len(i["strategies"]) >= 3]
         watch_tier = [(t, i) for t, i in qualified
-                      if (t, i) not in top_tier and (t, i) not in strong_tier]
+                      if len(i["strategies"]) == 2 and i["score"] >= 70
+                      and (t, i) not in buy_tier]
 
-        actionable = top_tier + strong_tier
-
-        if not qualified:
+        if not buy_tier and not watch_tier:
             send_telegram(f"📊 <b>Daily S&P 500 Scan</b>\n"
                          f"Scanned {scanned} stocks\n\n"
                          f"No signals today. Market is quiet.")
@@ -439,14 +434,13 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
             msg_lines = [
                 f"📊 <b>Daily S&P 500 Scan</b>",
                 f"Scanned {scanned} stocks",
-                f"<i>Prices are ~15 min delayed (daily signals, not intraday)</i>",
                 f"",
             ]
 
-            if top_tier:
-                msg_lines.append(f"🔥 <b>HIGH CONVICTION ({len(top_tier)}):</b>")
+            if buy_tier:
+                msg_lines.append(f"🔥 <b>BUY ({len(buy_tier)}):</b>")
                 msg_lines.append("")
-                for ticker, info in top_tier[:5]:
+                for ticker, info in buy_tier[:5]:
                     a = info["alerts"][0]
                     strats = ", ".join(sorted(info["strategies"]))
                     rsi_str = f" | RSI {a['rsi']:.0f}" if a.get("rsi") else ""
@@ -464,26 +458,13 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
                         msg_lines.append(f"   ⚠️ Backtest: weak ({bt['return_pct']:+.0f}% / 3y)")
                     msg_lines.append("")
 
-            if strong_tier:
-                msg_lines.append(f"⚡ <b>STRONG ({len(strong_tier)}):</b>")
-                msg_lines.append("")
-                for ticker, info in strong_tier[:5]:
+            if watch_tier:
+                msg_lines.append(f"⚡ <b>WATCH ({len(watch_tier)}):</b>")
+                for ticker, info in watch_tier[:5]:
                     a = info["alerts"][0]
                     strats = ", ".join(sorted(info["strategies"]))
                     rsi_str = f" | RSI {a['rsi']:.0f}" if a.get("rsi") else ""
-                    timing = a.get("timing", {})
-                    timing_str = f" | {timing.get('action', '')}" if timing else ""
-                    msg_lines.append(f"⚡ <b>{ticker}</b> ${a['price']:.2f}{rsi_str}{timing_str}")
-                    msg_lines.append(f"   Score: {info['score']:.0f} | {strats}")
-                    bt = info.get("backtest")
-                    if bt and bt["passed"]:
-                        msg_lines.append(f"   ✅ Backtest: {bt['return_pct']:+.0f}% / 3y")
-                    msg_lines.append("")
-
-            if watch_tier:
-                msg_lines.append(f"🟢 <b>WATCH ({len(watch_tier)}):</b>")
-                tickers_list = ", ".join(f"{t} ({len(i['strategies'])})" for t, i in watch_tier[:8])
-                msg_lines.append(f"   {tickers_list}")
+                    msg_lines.append(f"⚡ {ticker} ${a['price']:.2f}{rsi_str} — {strats}")
                 msg_lines.append("")
 
             top_sectors = sorted(sector_counts.items(), key=lambda x: -x[1])[:3]
@@ -492,16 +473,15 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
 
             send_telegram("\n".join(msg_lines))
 
-            # Individual detailed alerts for HIGH CONVICTION + STRONG
-            for ticker, info in actionable[:5]:
+            # Individual detailed alerts ONLY for 🔥 BUY tier
+            for ticker, info in buy_tier[:5]:
                 a = info["alerts"][0]
                 a["strategy"] = f"{len(info['strategies'])} strategies: {', '.join(sorted(info['strategies']))}"
                 bt = info.get("backtest")
                 ai = analyze_signal(a, bt)
                 if ai:
                     a["ai_analysis"] = ai
-                tier = "high" if len(info["strategies"]) >= 3 else "watch"
-                send_telegram(format_alert(a, tier=tier))
+                send_telegram(format_alert(a, tier="high"))
 
         print(f"Telegram alerts sent.")
 
