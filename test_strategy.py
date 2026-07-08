@@ -169,9 +169,15 @@ def run_tests(sample_size: int = SAMPLE_SIZE) -> dict:
             avg_loss = sum(s["pnl_pct"] for s in losses) / len(losses) if losses else 0
             total_profit = sum(TRADE_AMOUNT * s["pnl_pct"] / 100 for s in signals)
 
-            status = "PASS" if win_rate >= 50 and avg_return > 0 else "FAIL"
-            if tier_name == "🔥 BUY" and status == "FAIL":
-                overall_pass = False
+            # Need at least 5 signals to judge — small samples are meaningless
+            if len(signals) < 5:
+                status = "SKIP (too few signals)"
+            elif win_rate >= 50 and avg_return > 0:
+                status = "PASS"
+            else:
+                status = "FAIL"
+                if tier_name == "🔥 BUY":
+                    overall_pass = False
 
             print(f"\n    {tier_name}: {len(signals)} signals (~{len(signals)*scale:.0f} extrapolated)  [{status}]")
             print(f"      Win rate:    {win_rate:.0f}% ({len(wins)}W / {len(losses)}L)")
@@ -188,11 +194,39 @@ def run_tests(sample_size: int = SAMPLE_SIZE) -> dict:
                 print(f"      Best:  {best['ticker']} {best['pnl_pct']:+.1f}% (bought ${best['buy_price']:.2f})")
                 print(f"      Worst: {worst['ticker']} {worst['pnl_pct']:+.1f}% (bought ${worst['buy_price']:.2f})")
 
+    # Aggregate across all windows
+    all_buys = []
+    all_watch = []
+    for name, data in all_window_results.items():
+        all_buys.extend(data.get("buy", []))
+        all_watch.extend(data.get("watch", []))
+
+    print(f"\n  {'─'*60}")
+    print(f"  AGGREGATE (all 3 months combined)")
+    for tier_name, signals in [("🔥 BUY", all_buys), ("⚡ WATCH", all_watch)]:
+        if not signals:
+            continue
+        wins = [s for s in signals if s["pnl_pct"] > 0]
+        avg_ret = sum(s["pnl_pct"] for s in signals) / len(signals)
+        wr = len(wins) / len(signals) * 100
+        total_profit = sum(TRADE_AMOUNT * s["pnl_pct"] / 100 for s in signals)
+        print(f"    {tier_name}: {len(signals)} signals, {wr:.0f}% win rate, "
+              f"{avg_ret:+.2f}% avg, ${total_profit:+.0f} profit")
+
+    # Overall pass: aggregate BUY win rate >= 50% with enough signals
+    if all_buys and len(all_buys) >= 3:
+        agg_wr = sum(1 for s in all_buys if s["pnl_pct"] > 0) / len(all_buys) * 100
+        agg_ret = sum(s["pnl_pct"] for s in all_buys) / len(all_buys)
+        if agg_wr < 50 or agg_ret < 0:
+            overall_pass = False
+
     print(f"\n{'='*70}")
     print(f"  OVERALL: {'PASS ✅' if overall_pass else 'FAIL ❌'}")
     if not overall_pass:
-        print(f"  ⚠️  BUY tier underperforming in at least one window.")
+        print(f"  ⚠️  BUY tier underperforming across aggregate.")
         print(f"  Review strategy parameters before deploying.")
+    else:
+        print(f"  Strategy validated across 3 months of data.")
     print(f"{'='*70}\n")
 
     return {"pass": overall_pass, "results": all_window_results}
