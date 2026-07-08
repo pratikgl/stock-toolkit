@@ -109,7 +109,11 @@ def cmd_alert_scan(args):
 
 
 def cmd_alert_scan_full(args):
-    run_full_scan(notify=not args.no_notify)
+    run_full_scan(notify=not args.no_notify, market="us")
+
+
+def cmd_alert_scan_india(args):
+    run_full_scan(notify=not args.no_notify, market="india")
 
 
 def cmd_signals(args):
@@ -258,6 +262,10 @@ def main():
     p_scan_full = alert_sub.add_parser("scan-full", help="Scan ALL S&P 500 stocks with all strategies")
     p_scan_full.add_argument("--no-notify", action="store_true", help="Don't send Telegram messages")
     p_scan_full.set_defaults(func=cmd_alert_scan_full)
+
+    p_scan_india = alert_sub.add_parser("scan-india", help="Scan Nifty 50 + Midcap stocks")
+    p_scan_india.add_argument("--no-notify", action="store_true", help="Don't send Telegram messages")
+    p_scan_india.set_defaults(func=cmd_alert_scan_india)
 
     # --- Portfolio commands ---
     p_portfolio = sub.add_parser("portfolio", help="Track your holdings and P&L")

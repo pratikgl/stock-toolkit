@@ -12,6 +12,7 @@ import pandas as pd
 from strategies import STRATEGIES
 from watchlist import get_watchlist
 from sp500 import get_sp500_tickers
+from nifty import get_nifty_tickers
 from notifier import send_telegram, format_alert, format_scan_summary
 from indicators import compute_rsi, compute_sma
 from backtester import Backtester
@@ -451,16 +452,23 @@ def _classify_tier(info: dict) -> str:
     return "none"
 
 
-def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
-    """Scan ALL S&P 500 stocks with all strategies. Designed for GitHub Actions."""
-    tickers = get_sp500_tickers()
+def run_full_scan(notify: bool = True, max_workers: int = 10, market: str = "us") -> list[dict]:
+    """Scan stocks with all strategies. market='us' for S&P 500, 'india' for Nifty."""
+    if market == "india":
+        tickers = get_nifty_tickers("extended")
+        market_label = "Indian (Nifty 50 + Midcap)"
+        currency = "₹"
+    else:
+        tickers = get_sp500_tickers()
+        market_label = "S&P 500"
+        currency = "$"
     all_strategies = list(STRATEGIES.keys())
 
     history = _load_history()
     all_alerts = []
     scanned = 0
 
-    print(f"Full scan: {len(tickers)} stocks x {len(all_strategies)} strategies...")
+    print(f"Full scan ({market_label}): {len(tickers)} stocks x {len(all_strategies)} strategies...")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_scan_ticker, t, all_strategies): t for t in tickers}
@@ -547,12 +555,12 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
         watch_tier = [(t, i) for t, i in ranked if i["tier"] == "watch"]
 
         if not buy_tier and not watch_tier:
-            send_telegram(f"📊 <b>Daily S&P 500 Scan</b>\n"
+            send_telegram(f"📊 <b>Daily {market_label} Scan</b>\n"
                          f"Scanned {scanned} stocks\n\n"
                          f"No signals today. Market is quiet.")
         else:
             msg_lines = [
-                f"📊 <b>Daily S&P 500 Scan</b>",
+                f"📊 <b>Daily {market_label} Scan</b>",
                 f"Scanned {scanned} stocks",
                 f"",
             ]
@@ -568,7 +576,7 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
                     timing = a.get("timing", {})
                     timing_str = f" | {timing.get('action', '')}" if timing else ""
                     name = a.get("name", ticker)
-                    msg_lines.append(f"🔥 <b>{ticker}</b> ({name}) ${a['price']:.2f}")
+                    msg_lines.append(f"🔥 <b>{ticker}</b> ({name}) {currency}{a['price']:.2f}")
                     msg_lines.append(f"   Score: {info['score']:.0f}{rsi_str}{vol_str}{timing_str}")
                     msg_lines.append(f"   {len(info['strategies'])} strategies: {strats}")
                     bt = info.get("backtest")
@@ -584,7 +592,7 @@ def run_full_scan(notify: bool = True, max_workers: int = 10) -> list[dict]:
                     a = info["alerts"][0]
                     strats = ", ".join(sorted(info["strategies"]))
                     rsi_str = f" | RSI {a['rsi']:.0f}" if a.get("rsi") else ""
-                    msg_lines.append(f"⚡ {ticker} ${a['price']:.2f}{rsi_str} — {strats}")
+                    msg_lines.append(f"⚡ {ticker} {currency}{a['price']:.2f}{rsi_str} — {strats}")
                 msg_lines.append("")
 
             top_sectors = sorted(sector_counts.items(), key=lambda x: -x[1])[:3]
