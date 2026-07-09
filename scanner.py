@@ -12,7 +12,7 @@ import pandas as pd
 from strategies import STRATEGIES
 from watchlist import get_watchlist
 from sp500 import get_sp500_tickers
-from nifty import get_nifty_tickers
+from nifty import get_nifty_tickers as _get_nifty
 from notifier import send_telegram, format_alert, format_scan_summary
 from indicators import compute_rsi, compute_sma
 from backtester import Backtester
@@ -455,7 +455,7 @@ def _classify_tier(info: dict) -> str:
 def run_full_scan(notify: bool = True, max_workers: int = 10, market: str = "us") -> list[dict]:
     """Scan stocks with all strategies. market='us' for S&P 500, 'india' for Nifty."""
     if market == "india":
-        tickers = get_nifty_tickers("extended")
+        tickers = _get_nifty()
         market_label = "Indian (Nifty 50 + Midcap)"
         currency = "₹"
     else:
