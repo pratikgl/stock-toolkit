@@ -4,27 +4,15 @@ on:
   push:
     branches: [main]
   schedule:
-    # US Market (NYSE/NASDAQ)
-    # Scan 1: 15:00 UTC Mon-Fri = 8:30 PM IST = 11:00 AM EST (1.5hr after open)
-    - cron: '0 15 * * 1-5'
-    # Scan 2: 19:30 UTC Mon-Fri = 1:00 AM IST = 3:30 PM EST (30min before close)
-    - cron: '30 19 * * 1-5'
-    # Indian Market (NSE)
-    # Scan 3: 05:00 UTC Mon-Fri = 10:30 AM IST (1hr after open)
+    # Scan 1: 05:00 UTC Mon-Fri = 10:30 AM IST (India market, 1hr after open)
     - cron: '0 5 * * 1-5'
-    # Scan 4: 09:30 UTC Mon-Fri = 3:00 PM IST (30min before close)
+    # Scan 2: 09:30 UTC Mon-Fri = 3:00 PM IST (India market, 30min before close)
     - cron: '30 9 * * 1-5'
+    # Scan 3: 15:00 UTC Mon-Fri = 8:30 PM IST (US market, 1.5hr after open)
+    - cron: '0 15 * * 1-5'
+    # Scan 4: 19:30 UTC Mon-Fri = 1:00 AM IST (US market, 30min before close)
+    - cron: '30 19 * * 1-5'
   workflow_dispatch:
-    inputs:
-      market:
-        description: 'Market to scan'
-        required: false
-        default: 'both'
-        type: choice
-        options:
-          - both
-          - us
-          - india
 
 jobs:
   test:
@@ -69,39 +57,19 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -c "from trade_tracker import check_telegram_trades; check_telegram_trades()"
 
-      - name: Determine which market to scan
-        id: market
-        run: |
-          HOUR=$(date -u +%H)
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "market=${{ inputs.market || 'both' }}" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" -ge 14 ] && [ "$HOUR" -le 20 ]; then
-            echo "market=us" >> $GITHUB_OUTPUT
-          elif [ "$HOUR" -ge 4 ] && [ "$HOUR" -le 10 ]; then
-            echo "market=india" >> $GITHUB_OUTPUT
-          else
-            echo "market=both" >> $GITHUB_OUTPUT
-          fi
+      - name: Scan Indian market
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python main.py alerts scan-india
 
       - name: Scan US market
-        if: steps.market.outputs.market == 'us' || steps.market.outputs.market == 'both'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          set -e
-          python main.py alerts scan-full
-
-      - name: Scan Indian market
-        if: steps.market.outputs.market == 'india' || steps.market.outputs.market == 'both'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          set -e
-          python main.py alerts scan-india
+        run: python main.py alerts scan-full
 
       - name: Check sell signals
         env:
