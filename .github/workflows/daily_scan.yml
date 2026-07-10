@@ -4,41 +4,19 @@ on:
   push:
     branches: [main]
   schedule:
-    # Scan 1: 05:00 UTC Mon-Fri = 10:30 AM IST (India market, 1hr after open)
-    - cron: '0 5 * * 1-5'
-    # Scan 2: 09:30 UTC Mon-Fri = 3:00 PM IST (India market, 30min before close)
+    # 3 scans that actually fire reliably on GitHub free tier:
+    # Scan 1: 09:30 UTC = 3:00 PM IST (India close) + US previous close
     - cron: '30 9 * * 1-5'
-    # Scan 3: 15:00 UTC Mon-Fri = 8:30 PM IST (US market, 1.5hr after open)
+    # Scan 2: 15:00 UTC = 8:30 PM IST (US open + 1.5hr) + India close recap
     - cron: '0 15 * * 1-5'
-    # Scan 4: 19:30 UTC Mon-Fri = 1:00 AM IST (US market, 30min before close)
+    # Scan 3: 19:30 UTC = 1:00 AM IST (US close) + full day recap
     - cron: '30 19 * * 1-5'
   workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    if: github.event_name == 'push'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run strategy performance tests
-        run: python test_strategy.py
-
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [test]
-    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
 
     steps:
       - uses: actions/checkout@v4
@@ -61,14 +39,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python main.py alerts scan-india
 
       - name: Scan US market
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python main.py alerts scan-full
 
       - name: Check sell signals
@@ -93,3 +69,22 @@ jobs:
           name: scan-results-${{ github.run_number }}
           path: screener_output.csv
           retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run strategy performance tests
+        run: python test_strategy.py
