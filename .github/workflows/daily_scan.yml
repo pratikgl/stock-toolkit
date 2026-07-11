@@ -1,79 +1,14 @@
-name: Daily Stock Scan
+name: Strategy Test (on push)
 
 on:
   push:
     branches: [main]
-  schedule:
-    # 3 scans that actually fire reliably on GitHub free tier:
-    # Scan 1: 09:30 UTC = 3:00 PM IST (India close) + US previous close
-    - cron: '30 9 * * 1-5'
-    # Scan 2: 15:00 UTC = 8:30 PM IST (US open + 1.5hr) + India close recap
-    - cron: '0 15 * * 1-5'
-    # Scan 3: 19:30 UTC = 1:00 AM IST (US close) + full day recap
-    - cron: '30 19 * * 1-5'
   workflow_dispatch:
 
 jobs:
-  scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Process Telegram trade commands
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -c "from trade_tracker import check_telegram_trades; check_telegram_trades()"
-
-      - name: Scan Indian market
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py alerts scan-india
-
-      - name: Scan US market
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py alerts scan-full
-
-      - name: Check sell signals
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py portfolio sell-check
-
-      - name: Save holdings state
-        if: always()
-        run: |
-          git config user.name "stock-toolkit-bot"
-          git config user.email "bot@stock-toolkit"
-          git add holdings.json last_telegram_update.json 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Update holdings from Telegram trades"
-          git push || true
-
-      - name: Upload scan results
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scan-results-${{ github.run_number }}
-          path: screener_output.csv
-          retention-days: 30
-
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: github.event_name == 'push'
 
     steps:
       - uses: actions/checkout@v4
