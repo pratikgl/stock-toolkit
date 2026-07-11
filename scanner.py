@@ -14,7 +14,7 @@ from watchlist import get_watchlist
 from sp500 import get_sp500_tickers
 from nifty import get_nifty_tickers as _get_nifty
 from notifier import send_telegram, format_alert, format_scan_summary
-from indicators import compute_rsi, compute_sma
+from indicators import compute_rsi, compute_sma, compute_enhanced_indicators
 from backtester import Backtester
 from ai_analyzer import analyze_signal
 
@@ -183,6 +183,11 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
         if cap and cap > 50_000_000_000:
             quality_score += 5  # large cap bonus
 
+        # TA-Lib enhanced indicators
+        enhanced = compute_enhanced_indicators(hist)
+        quality_score += enhanced.get("bonus", 0)
+        enhanced_reasons = enhanced.get("reasons", [])
+
         alerts = []
         for strat_name in strategy_names:
             if strat_name not in STRATEGIES:
@@ -219,6 +224,9 @@ def _scan_ticker(ticker: str, strategy_names: list[str]) -> list[dict]:
 
                 if earnings_warning:
                     reasons.append(earnings_warning)
+
+                for er in enhanced_reasons:
+                    reasons.append(er)
 
                 # Timing analysis
                 timing = _compute_timing(df, signal)
