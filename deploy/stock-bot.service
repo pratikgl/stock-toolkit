@@ -1,0 +1,14 @@
+[Unit]
+Description=Stock Toolkit Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/stock-toolkit
+ExecStart=/home/ubuntu/stock-toolkit/venv/bin/python3 bot_service.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
