@@ -96,7 +96,11 @@ if [ ! -f user_data/config.json ]; then
     },
 
     "api_server": {
-        "enabled": false
+        "enabled": false,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "username": "",
+        "password": ""
     },
 
     "bot_name": "freqtrade-crypto",
